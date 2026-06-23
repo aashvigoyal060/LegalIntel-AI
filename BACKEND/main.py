@@ -98,7 +98,7 @@ class DocumentStats(BaseModel):
     risksIdentified: int
 
 class AnalysisRequest(BaseModel):
-    primary_contract: ContractDocument
+    primary_contract: Optional[ContractDocument] = None
     supporting_documents: List[ContractDocument]
     enterprise_context: List[ContractDocument]
 
@@ -131,89 +131,108 @@ class ChatResponse(BaseModel):
 async def root():
     return {"message": "LegalIntel AI API - Contract Intelligence Platform"}
 
+# Define required documents with identifying keywords
+REQUIRED_DOCUMENTS = [
+    {"name": "Signed Master Agreement / Contract", "keywords": ["contract", "agreement", "msa", "master", "signed"], "severity": "critical"},
+    {"name": "Scope of Work (SOW)", "keywords": ["sow", "scope of work", "statement of work"], "severity": "high"},
+    {"name": "Purchase Order (PO)", "keywords": ["po", "purchase order", "order"], "severity": "high"},
+    {"name": "Payment Terms / Commercial Agreement", "keywords": ["payment", "commercial", "pricing"], "severity": "high"},
+    {"name": "Insurance Certificates", "keywords": ["insurance", "certificate", "policy"], "severity": "high"},
+    {"name": "Compliance / Regulatory Approvals", "keywords": ["compliance", "regulatory", "approval"], "severity": "medium"},
+    {"name": "Technical Specifications / Annexures", "keywords": ["technical", "specification", "annexure", "annex"], "severity": "medium"},
+    {"name": "Data Processing Agreement (DPA)", "keywords": ["dpa", "data processing"], "severity": "critical"},
+]
+
+def check_document_match(doc: ContractDocument, required_doc):
+    """Check if an uploaded document matches a required document"""
+    doc_name = doc.name.lower()
+    doc_content = doc.content.lower()
+    for keyword in required_doc["keywords"]:
+        if keyword in doc_name or keyword in doc_content:
+            return True
+    return False
+
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_contract(request: AnalysisRequest):
-    # Mock analysis data matching the frontend expectations
+    # Collect all uploaded documents
+    all_uploaded_docs = [request.primary_contract] if request.primary_contract else []
+    all_uploaded_docs.extend(request.supporting_documents)
+    all_uploaded_docs.extend(request.enterprise_context)
+    
+    # Match uploaded docs to required docs
+    available_required_docs = []
+    missing_required_docs = []
+    
+    for req_doc in REQUIRED_DOCUMENTS:
+        matched = False
+        for uploaded_doc in all_uploaded_docs:
+            if check_document_match(uploaded_doc, req_doc):
+                available_required_docs.append(req_doc["name"])
+                matched = True
+                break
+        if not matched:
+            missing_required_docs.append(req_doc["name"])
+    
+    # Calculate deal readiness score
+    num_required = len(REQUIRED_DOCUMENTS)
+    num_available = len(available_required_docs)
+    readiness_score = int((num_available / num_required) * 100)
+    
+    # Basic contract summary from primary document
     contract_summary = ContractSummary(
-        overview="Master Services Agreement between Acme Corp and Tech Solutions for cloud migration services with a 3-year term and $2.5M total value.",
-        parties=["Acme Corp", "Tech Solutions Inc."],
-        keyObligations=[
-            "Complete migration within 6 months",
-            "Provide 24/7 support with 1hr SLA",
-            "Monthly payments of $69,444"
-        ]
+        overview=f"Contract analysis based on {len(all_uploaded_docs)} uploaded document(s)",
+        parties=[doc.name for doc in all_uploaded_docs[:2]] if all_uploaded_docs else ["Unknown"],
+        keyObligations=[f"Analyzed document: {doc.name}" for doc in all_uploaded_docs[:3]],
     )
     
-    extracted_clauses = [
-        ExtractedClause(id="1", type="Parties", content="This agreement is between Acme Corp and Tech Solutions Inc.", confidence=0.98),
-        ExtractedClause(id="2", type="Effective Date", content="This agreement shall commence on January 1, 2025.", confidence=0.96),
-        ExtractedClause(id="3", type="Expiry Date", content="This agreement shall terminate on December 31, 2027.", confidence=0.95),
-        ExtractedClause(id="4", type="Payment Terms", content="Net 30 days from invoice date. Late payments: 1.5% monthly interest.", confidence=0.92),
-        ExtractedClause(id="5", type="Contract Value", content="Total contract value: $2,500,000 USD.", confidence=0.99),
-        ExtractedClause(id="6", type="Termination Clause", content="Either party may terminate with 60 days written notice.", confidence=0.94),
-        ExtractedClause(id="7", type="Governing Law", content="Governing law: State of Delaware, USA.", confidence=0.97),
-        ExtractedClause(id="8", type="Data Privacy", content="All processing must comply with GDPR and CCPA.", confidence=0.91),
-        ExtractedClause(id="9", type="Liability", content="Liability capped at $1,000,000 per incident.", confidence=0.93),
-        ExtractedClause(id="10", type="Confidentiality", content="Confidentiality period: 5 years post-termination.", confidence=0.90),
-        ExtractedClause(id="11", type="SLA", content="99.9% uptime guarantee, 24/7 support with 1hr response.", confidence=0.88),
-        ExtractedClause(id="12", type="Insurance", content="Vendor must carry $5M general liability insurance.", confidence=0.89),
-        ExtractedClause(id="13", type="Audit Rights", content="Client may audit vendor records with 30 days notice.", confidence=0.92),
-    ]
-    
-    risks = [
-        Risk(id="r1", title="Uncapped Indemnity", description="Indemnification clause has no monetary limit.", level="critical", category="legal"),
-        Risk(id="r2", title="Missing Cyber Insurance", description="No requirement for cyber liability insurance.", level="high", category="security"),
-        Risk(id="r3", title="Payment Terms Mismatch", description="SOW shows net-45 but contract says net-30.", level="high", category="financial"),
-        Risk(id="r4", title="No Data Processing Agreement", description="DPA is referenced but not attached.", level="critical", category="compliance"),
-        Risk(id="r5", title="Broad IP Assignment", description="Vendor assigns all IP including pre-existing works.", level="medium", category="legal"),
-        Risk(id="r6", title="Unclear SLA Credits", description="SLA credits are not clearly defined.", level="medium", category="operational"),
-    ]
-    
-    missing_clauses = [
-        {"clause": "NDA", "severity": "high"},
-        {"clause": "GDPR Compliance", "severity": "critical"},
-        {"clause": "Indemnity", "severity": "critical"},
-        {"clause": "Cyber Insurance", "severity": "high"},
-        {"clause": "Data Processing Agreement", "severity": "critical"},
-        {"clause": "IP Ownership", "severity": "medium"},
-        {"clause": "Limitation of Liability", "severity": "low"},
-    ]
+    # Build risks from missing documents
+    risks = []
+    risk_id = 0
+    for req_doc in REQUIRED_DOCUMENTS:
+        if req_doc["name"] in missing_required_docs:
+            risk_id += 1
+            risks.append(Risk(
+                id=f"r{risk_id}",
+                title=f"Missing {req_doc['name']}",
+                description=f"{req_doc['name']} is required for deal closure but not uploaded",
+                level=req_doc["severity"],
+                category="compliance" if "compliance" in req_doc["name"].lower() or "dpa" in req_doc["name"].lower() else "legal"
+            ))
     
     timeline_events = [
-        TimelineEvent(id="t1", title="Contract Effective Date", date=datetime(2025, 1, 1), type="effective", description="Start of contractual obligations"),
-        TimelineEvent(id="t2", title="First Payment Due", date=datetime(2025, 2, 1), type="payment", description="First monthly invoice due"),
-        TimelineEvent(id="t3", title="Renewal Window Opens", date=datetime(2027, 10, 1), type="renewal", description="90-day renewal window begins"),
-        TimelineEvent(id="t4", title="Termination Notice Cutoff", date=datetime(2027, 11, 1), type="termination", description="Last day to submit termination notice"),
-        TimelineEvent(id="t5", title="Contract Expiration", date=datetime(2027, 12, 31), type="expiration", description="End of initial term"),
+        TimelineEvent(id="t1", title="Contract Analysis Complete", date=datetime.now(), type="effective", description="Document analysis completed successfully"),
     ]
     
     deal_readiness = DealReadiness(
-        score=45,
-        pendingApprovals=3,
-        complianceGaps=5,
-        missingDocuments=["Signed Master Agreement", "Data Processing Agreement", "Insurance Certificates", "Compliance Approvals"],
-        requiredActions=["Sign Master Agreement", "Execute Data Processing Agreement", "Obtain Insurance Certificates", "Resolve Payment Terms Conflict", "Get Compliance Approval"],
+        score=readiness_score,
+        pendingApprovals=len(missing_required_docs),
+        complianceGaps=len([m for m in missing_required_docs if "compliance" in m.lower() or "dpa" in m.lower()]),
+        missingDocuments=missing_required_docs,
+        requiredActions=[f"Upload {doc}" for doc in missing_required_docs],
     )
     
     ai_insights = AIInsights(
-        topRisks=risks[:3],
-        recommendedActions=["Cap indemnity at $5M", "Add cyber insurance requirement", "Resolve payment terms conflict", "Attach Data Processing Agreement"],
-        negotiationPoints=["Liability cap amount", "Indemnification scope", "SLA credit structure", "Intellectual property rights"],
-        executiveSummary="The contract has significant gaps in compliance and risk allocation. Key issues include uncapped indemnity, missing DPA, and no cyber insurance requirement.",
-        keyObligations=["Cloud migration within 6 months", "99.9% uptime guarantee", "Monthly payments of $69,444", "24/7 support with 1hr response"],
-        criticalDeadlines=[timeline_events[0], timeline_events[2]],
+        topRisks=risks[:5],
+        recommendedActions=deal_readiness.requiredActions[:5],
+        negotiationPoints=["Review all missing documents", "Verify document completeness"],
+        executiveSummary=f"Deal readiness: {readiness_score}%. Missing {len(missing_required_docs)} critical document(s) for closure.",
+        keyObligations=[f"Uploaded {len(all_uploaded_docs)} document(s)"],
+        criticalDeadlines=timeline_events,
     )
     
     document_stats = DocumentStats(
-        totalDocuments=5, pagesProcessed=147, clausesExtracted=13, risksIdentified=6,
+        totalDocuments=len(all_uploaded_docs),
+        pagesProcessed=len(all_uploaded_docs)*10, # mock
+        clausesExtracted=0, # mock for now
+        risksIdentified=len(risks),
     )
     
     return AnalysisResponse(
         contractSummary=contract_summary,
-        extractedClauses=extracted_clauses,
+        extractedClauses=[], # we'll add real extraction later
         risks=risks,
         conflicts=[],
-        missingClauses=missing_clauses,
+        missingClauses=[],
         timelineEvents=timeline_events,
         dealReadiness=deal_readiness,
         aiInsights=ai_insights,
