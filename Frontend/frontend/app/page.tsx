@@ -305,10 +305,11 @@ export default function Home() {
 
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     
     try {
       if (primaryDocs.length > 0) {
-        const response = await fetch("http://localhost:8000/analyze", {
+        const response = await fetch(`${API_URL}/analyze`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
